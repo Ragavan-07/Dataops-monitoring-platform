@@ -1,0 +1,31 @@
+# Secrets
+.env
+
+# Generated data and logs (folders are kept with .gitkeep)
+data/*
+!data/.gitkeep
+logs/*
+!logs/.gitkeep
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+*.egg-info/
+
+# Node
+node_modules/
+dist/
+
+# Spark
+spark-warehouse/
+metastore_db/
+derby.log
+
+# OS / editors
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

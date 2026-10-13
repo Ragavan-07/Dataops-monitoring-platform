@@ -1,0 +1,134 @@
+# Whole platform on one machine:
+#   Airflow (webserver + scheduler, runs Spark in local mode) -> http://localhost:8080
+#   FastAPI monitoring API                                   -> http://localhost:8000/docs
+#   React dashboard                                          -> http://localhost:3000
+#
+# Settings come from the .env file next to this file (copy .env.example to .env).
+
+x-airflow-common: &airflow-common
+  build: ./airflow
+  image: dataops-airflow:latest
+  environment: &airflow-common-env
+    AIRFLOW__CORE__EXECUTOR: LocalExecutor
+    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@airflow-db/airflow
+    AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+    AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "true"
+    AIRFLOW__WEBSERVER__SECRET_KEY: ${AIRFLOW_SECRET_KEY:-change-this-secret}
+    PYTHONPATH: /opt/airflow
+    MONITORING_DB_URL: postgresql://monitor:monitor@monitoring-db:5432/monitoring
+    LOCAL_DATA_ROOT: /opt/airflow/data
+    STORAGE_MODE: ${STORAGE_MODE:-local}
+    S3_BUCKET: ${S3_BUCKET:-}
+    AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
+    AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
+    AWS_DEFAULT_REGION: ${AWS_DEFAULT_REGION:-us-east-1}
+    NUM_EVENTS: ${NUM_EVENTS:-100000}
+    SPARK_DRIVER_MEMORY: ${SPARK_DRIVER_MEMORY:-2g}
+    MAX_INVALID_RATIO: ${MAX_INVALID_RATIO:-0.10}
+  volumes:
+    - ./airflow/dags:/opt/airflow/dags
+    - ./pipeline:/opt/airflow/pipeline
+    - ./tests:/opt/airflow/tests
+    - ./data:/opt/airflow/data
+    - ./logs:/opt/airflow/logs
+  user: "${AIRFLOW_UID:-50000}:0"
+  depends_on: &airflow-common-depends-on
+    airflow-db:
+      condition: service_healthy
+    monitoring-db:
+      condition: service_healthy
+
+services:
+  airflow-db:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: airflow
+      POSTGRES_PASSWORD: airflow
+      POSTGRES_DB: airflow
+    volumes:
+      - airflow-db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U airflow -d airflow"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  monitoring-db:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: monitor
+      POSTGRES_PASSWORD: monitor
+      POSTGRES_DB: monitoring
+    volumes:
+      - monitoring-db-data:/var/lib/postgresql/data
+      - ./monitoring_db/init.sql:/docker-entrypoint-initdb.d/01_init.sql:ro
+    ports:
+      - "5433:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U monitor -d monitoring"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  airflow-init:
+    <<: *airflow-common
+    entrypoint: /bin/bash
+    command:
+      - -c
+      - |
+        mkdir -p /opt/airflow/logs /opt/airflow/data
+        chown -R "${AIRFLOW_UID:-50000}:0" /opt/airflow/logs /opt/airflow/data
+        exec /entrypoint airflow version
+    environment:
+      <<: *airflow-common-env
+      _AIRFLOW_DB_MIGRATE: "true"
+      _AIRFLOW_WWW_USER_CREATE: "true"
+      _AIRFLOW_WWW_USER_USERNAME: ${AIRFLOW_ADMIN_USER:-airflow}
+      _AIRFLOW_WWW_USER_PASSWORD: ${AIRFLOW_ADMIN_PASSWORD:-airflow}
+    user: "0:0"
+
+  airflow-webserver:
+    <<: *airflow-common
+    command: webserver
+    ports:
+      - "8080:8080"
+    restart: unless-stopped
+    depends_on:
+      <<: *airflow-common-depends-on
+      airflow-init:
+        condition: service_completed_successfully
+
+  airflow-scheduler:
+    <<: *airflow-common
+    command: scheduler
+    restart: unless-stopped
+    depends_on:
+      <<: *airflow-common-depends-on
+      airflow-init:
+        condition: service_completed_successfully
+
+  api:
+    build: ./api
+    environment:
+      MONITORING_DB_URL: postgresql://monitor:monitor@monitoring-db:5432/monitoring
+      CORS_ORIGINS: http://localhost:3000,http://localhost:5173
+    ports:
+      - "8000:8000"
+    depends_on:
+      monitoring-db:
+        condition: service_healthy
+    restart: unless-stopped
+
+  dashboard:
+    build: ./dashboard
+    ports:
+      - "3000:80"
+    depends_on:
+      - api
+    restart: unless-stopped
+
+volumes:
+  airflow-db-data:
+  monitoring-db-data:

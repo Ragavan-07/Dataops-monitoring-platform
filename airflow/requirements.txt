@@ -1,0 +1,6 @@
+pyspark==3.5.3
+pandas
+numpy
+boto3
+psycopg2-binary
+pytest
